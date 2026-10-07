@@ -177,7 +177,7 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation, Expl
         Log.info("Connecting to \(settings.fullAddress)...")
         let timeout = AppSettings.shared.mongoTimeoutSec
         Task {
-            let result = await Result { try await MongoConnection.open(settings: settings, secrets: secrets, timeoutSeconds: timeout) }
+            let result = await Result.capture { try await MongoConnection.open(settings: settings, secrets: secrets, timeoutSeconds: timeout) }
             explorer.setConnecting(false)
             switch result {
             case .success(let connection):

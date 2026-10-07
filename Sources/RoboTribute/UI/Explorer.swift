@@ -59,7 +59,7 @@ class ExplorerNode {
         title = Self.countTitle(base, nil)
         completion()
         Task {
-            let result = await Result { try await fetch() }
+            let result = await Result.capture { try await fetch() }
             isLoading = false
             children = []
             switch result {

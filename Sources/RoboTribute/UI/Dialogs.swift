@@ -317,14 +317,14 @@ final class DiagnosticWindow: ModalDialog {
         unauthenticated.credential.enabled = false
         let timeout = AppSettings.shared.mongoTimeoutSec
         Task {
-            let reachable = await Result { try await MongoConnection.open(settings: unauthenticated, secrets: secrets, timeoutSeconds: timeout) }
+            let reachable = await Result.capture { try await MongoConnection.open(settings: unauthenticated, secrets: secrets, timeoutSeconds: timeout) }
             var authorized: Result<MongoConnection, Error>?
             var listed: Result<[String], Error>?
             if case .success(let probe) = reachable {
                 probe.close()
-                authorized = await Result { try await MongoConnection.open(settings: settings, secrets: secrets, timeoutSeconds: timeout) }
+                authorized = await Result.capture { try await MongoConnection.open(settings: settings, secrets: secrets, timeoutSeconds: timeout) }
                 if case .success(let connection)? = authorized {
-                    listed = await Result { try await connection.run { try $0.listDatabases() } }
+                    listed = await Result.capture { try await connection.run { try $0.listDatabases() } }
                     connection.close()
                 }
             }
