@@ -57,7 +57,7 @@ fi
 rm -rf "$SRC"
 fetch "https://github.com/mongodb/mongo-c-driver/releases/download/$MONGOC_VERSION/mongo-c-driver-$MONGOC_VERSION.tar.gz" "$MONGOC_SHA256"
 
-cmake -S "$SRC" -B "$DEPS/build" -G Ninja \
+cmake -S "$SRC" -B "$DEPS/build" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -76,10 +76,9 @@ cmake -S "$SRC" -B "$DEPS/build" -G Ninja \
     -DENABLE_ZSTD=OFF \
     -DENABLE_ZLIB=BUNDLED \
     -DENABLE_SRV=ON \
-    -DENABLE_CLIENT_SIDE_ENCRYPTION=OFF \
-    -DMONGO_USE_CCACHE=OFF
+    -DENABLE_CLIENT_SIDE_ENCRYPTION=OFF
 
-cmake --build "$DEPS/build" --target install
+cmake --build "$DEPS/build" --target install --parallel "$(sysctl -n hw.ncpu)"
 
 mkdir -p "$PREFIX/lib"
 cp "$OPENSSL_ROOT/lib/libssl.a" "$OPENSSL_ROOT/lib/libcrypto.a" "$PREFIX/lib/"

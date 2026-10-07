@@ -2,14 +2,14 @@
 
 A MongoDB client in memory of Robo 3T.
 
-A native macOS (Apple Silicon) re-implementation of the classic **Robo 3T 1.4** GUI: same layout, icons, dialogs and
+A native macOS (Apple Silicon) re-implementation of the classic **Robo 3T 1.4** GUI: same layout, dialogs and
 shortcuts, built on a current MongoDB driver so it works with MongoDB 3.6 to 8.x. Robo 3T is no longer maintained, its
 legacy shell fails against newer servers and there is no arm64 build. This project keeps the UI and replaces the
 internals.
 
 ## Run it
 
-Requirements: macOS 14+ on Apple Silicon, Xcode, CMake and Ninja (`brew install cmake ninja`).
+Requirements: macOS 14+ on Apple Silicon, Xcode and CMake (`brew install cmake`).
 
 ```sh
 ./scripts/build-app.sh          # builds dependencies on first run, then build/Robo Tribute.app
@@ -64,7 +64,7 @@ Integration tests skip unless their local server is configured; never point them
 ## Thank you, Robo 3T
 
 This app only exists because of [Robo 3T](https://github.com/Studio3T/robomongo), formerly Robomongo. Its design,
-dialogs, icons and document formatting are the work of its authors; this project re-implements them and claims none of
+dialogs and document formatting are the work of its authors; this project re-implements them and claims none of
 it as its own. Thanks to [@schetnikovich](https://github.com/schetnikovich), [@simsekgokhan](https://github.com/simsekgokhan),
 [@stennie](https://github.com/stennie), [all other contributors](https://github.com/Studio3T/robomongo/graphs/contributors)
 and 3T Software Labs for keeping it open source. For a supported commercial MongoDB IDE, see
