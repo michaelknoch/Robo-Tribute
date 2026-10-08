@@ -68,6 +68,18 @@ final class TransportSecurityTests: XCTestCase {
         XCTAssertNotNil(settings.transportSecurityError)
     }
 
+    func testReplicaSetWithoutVerifiedTLSMustStayLocal() {
+        var settings = direct("localhost")
+        settings.connectionType = .replicaSet
+        XCTAssertTrue(settings.requiresLocalMembers)
+        settings.ssl.sslEnabled = true
+        settings.ssl.allowInvalidCertificates = true
+        XCTAssertTrue(settings.requiresLocalMembers)
+        settings.ssl.allowInvalidCertificates = false
+        XCTAssertFalse(settings.requiresLocalMembers)
+        XCTAssertFalse(direct("localhost").requiresLocalMembers)
+    }
+
     func testConnectRefusesBeforeTouchingTheNetwork() {
         XCTAssertThrowsError(try MongoConnection(settings: direct("db.example.com"), secrets: ConnectionSecrets(), timeoutSeconds: 1)) { XCTAssertTrue($0.localizedDescription.contains("TLS is required")) }
     }

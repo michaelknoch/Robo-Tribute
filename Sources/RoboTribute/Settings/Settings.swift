@@ -64,8 +64,11 @@ nonisolated struct ConnectionSettings: Codable, Equatable, Identifiable {
     var ssh = SSHSettings()
     var ssl = SSLSettings()
     var imported = false
+    /// Optional so settings saved before it existed still decode.
+    var readOnly: Bool?
 
     var isReplicaSet: Bool { connectionType == .replicaSet }
+    var isReadOnly: Bool { readOnly ?? false }
 
     var fullAddress: String {
         switch connectionType {
@@ -82,6 +85,8 @@ nonisolated struct ConnectionSettings: Codable, Equatable, Identifiable {
 
     var usesTLS: Bool { ssl.sslEnabled || connectionType == .srv }
     var verifiesCertificates: Bool { !ssl.allowInvalidCertificates && !(ssl.useAdvancedOptions && ssl.allowInvalidHostnames) }
+    /// Without verified TLS the driver must never discover its way off this machine.
+    var requiresLocalMembers: Bool { isReplicaSet && !(usesTLS && verifiesCertificates) }
 
     /// Why this connection may not be opened: anything beyond this machine needs verified TLS or an SSH tunnel.
     var transportSecurityError: String? {
@@ -89,7 +94,7 @@ nonisolated struct ConnectionSettings: Codable, Equatable, Identifiable {
         let hosts: [String]
         switch connectionType {
         case .direct, .srv: hosts = [serverHost]
-        case .replicaSet: hosts = replicaSetMembers.isEmpty ? [serverHost] : replicaSetMembers.map(Self.host(ofMember:))
+        case .replicaSet: hosts = seedMembers.map(Self.host(ofMember:))
         }
         if hosts.allSatisfy(Self.isLoopback) { return nil }
         if !usesTLS { return "TLS is required for remote servers. Enable TLS or connect through an SSH tunnel." }
@@ -97,6 +102,13 @@ nonisolated struct ConnectionSettings: Codable, Equatable, Identifiable {
             return "Remote servers need a verified TLS certificate. Use a CA-signed certificate and disallow invalid hostnames."
         }
         return nil
+    }
+
+    var seedMembers: [String] { replicaSetMembers.isEmpty ? ["\(serverHost):\(serverPort)"] : replicaSetMembers }
+
+    static func splitHostPort(_ member: String) -> (host: String, port: Int)? {
+        guard let colon = member.lastIndex(of: ":"), let port = Int(member[member.index(after: colon)...]) else { return nil }
+        return (String(member[..<colon]), port)
     }
 
     static func host(ofMember member: String) -> String {

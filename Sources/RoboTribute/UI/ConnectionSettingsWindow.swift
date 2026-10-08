@@ -56,6 +56,7 @@ final class ConnectionSettingsWindow: ModalDialog, NSTableViewDataSource, NSTabl
 
     // Advanced
     private let defaultDbField = NSTextField()
+    private let readOnlyCheck = NSButton(checkboxWithTitle: "Read-only connection", target: nil, action: nil)
 
     init(settings: ConnectionSettings, secrets: ConnectionSecrets) {
         self.settings = settings
@@ -286,7 +287,10 @@ final class ConnectionSettingsWindow: ModalDialog, NSTableViewDataSource, NSTabl
         let g = grid([
             [NSTextField(labelWithString: "Default Database:"), defaultDbField],
             [NSGridCell.emptyContentView, description],
+            [NSGridCell.emptyContentView, readOnlyCheck],
+            [NSGridCell.emptyContentView, Self.wrapping("Blocks every command that could change data, from the shell, the explorer and the document editor.")],
         ])
+        g.row(at: 2).topPadding = 12
         g.column(at: 1).width = 440
         return g
     }
@@ -336,6 +340,7 @@ final class ConnectionSettingsWindow: ModalDialog, NSTableViewDataSource, NSTabl
         invalidHostnamesPopup.selectItem(at: ssl.allowInvalidHostnames ? 1 : 0)
 
         defaultDbField.stringValue = settings.defaultDatabase
+        readOnlyCheck.state = settings.isReadOnly ? .on : .off
         typeChanged()
         updateAuthState()
         updateSSHState()
@@ -349,7 +354,7 @@ final class ConnectionSettingsWindow: ModalDialog, NSTableViewDataSource, NSTabl
         settings.serverPort = Int(portField.stringValue) ?? 27017
         settings.replicaSetMembers = settings.isReplicaSet ? members.filter { !$0.isEmpty } : []
         settings.replicaSetName = settings.isReplicaSet ? setNameField.stringValue : ""
-        if settings.isReplicaSet, let first = members.first.flatMap(Self.splitHostPort) {
+        if settings.isReplicaSet, let first = members.first.flatMap(ConnectionSettings.splitHostPort) {
             settings.serverHost = first.host
             settings.serverPort = first.port
         }
@@ -384,6 +389,7 @@ final class ConnectionSettingsWindow: ModalDialog, NSTableViewDataSource, NSTabl
         secrets.pemPassphrase = settings.ssl.askPassphrase ? "" : pemPassField.stringValue
 
         settings.defaultDatabase = defaultDbField.stringValue
+        settings.readOnly = readOnlyCheck.state == .on
     }
 
     override func validate() -> Bool {
@@ -499,7 +505,7 @@ final class ConnectionSettingsWindow: ModalDialog, NSTableViewDataSource, NSTabl
 
     @objc private func membersPlusMinus(_ sender: NSSegmentedControl) {
         if sender.selectedSegment == 1 {
-            if let last = members.last.flatMap(Self.splitHostPort) {
+            if let last = members.last.flatMap(ConnectionSettings.splitHostPort) {
                 members.append("\(last.host):\(last.port + 1)")
             } else {
                 members.append("localhost:\(27017 + members.count)")
@@ -554,7 +560,7 @@ final class ConnectionSettingsWindow: ModalDialog, NSTableViewDataSource, NSTabl
             members = hosts
             setNameField.stringValue = replicaSet
             membersTable.reloadData()
-        } else if let first = hosts.first.flatMap(Self.splitHostPort) {
+        } else if let first = hosts.first.flatMap(ConnectionSettings.splitHostPort) {
             typePopup.selectItem(at: ConnectionType.direct.rawValue)
             hostField.stringValue = first.host
             portField.stringValue = String(first.port)
@@ -588,11 +594,6 @@ final class ConnectionSettingsWindow: ModalDialog, NSTableViewDataSource, NSTabl
         typeChanged()
         updateAuthState()
         updateTLSState()
-    }
-
-    static func splitHostPort(_ member: String) -> (host: String, port: Int)? {
-        guard let colon = member.lastIndex(of: ":"), let port = Int(member[member.index(after: colon)...]) else { return nil }
-        return (String(member[..<colon]), port)
     }
 
     // MARK: Members table

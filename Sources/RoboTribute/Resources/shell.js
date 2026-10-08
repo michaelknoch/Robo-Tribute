@@ -463,6 +463,11 @@
         return doc;
     }
 
+    function requireFilter(q, method) {
+        if (q === undefined || q === null) throw new Error(method + ' needs a filter, use {} to match all documents');
+        return normalizeQuery(q);
+    }
+
     function normalizeQuery(q) {
         if (q === undefined || q === null) return {};
         if (typeof q !== 'object' || q instanceof ObjectId || q instanceof NumberLong || q instanceof BinData) return { _id: q };
@@ -561,7 +566,7 @@
         return { acknowledged: true, insertedIds: list.map(function (d) { return d._id; }) };
     };
     C._update = function (q, u, upsert, multi, extra) {
-        var stmt = { q: normalizeQuery(q), u: u, upsert: !!upsert, multi: !!multi };
+        var stmt = { q: requireFilter(q, 'update'), u: u, upsert: !!upsert, multi: !!multi };
         if (extra) ['arrayFilters', 'collation', 'hint'].forEach(function (k) { if (extra[k] !== undefined) stmt[k] = extra[k]; });
         var reply = (command(this._db._name, { update: this._name, updates: [stmt] }));
         var upserted = reply.upserted && reply.upserted.length ? reply.upserted[0]._id : undefined;
@@ -609,7 +614,7 @@
         return this.update({ _id: doc._id }, doc, { upsert: true });
     };
     C._delete = function (q, limit, extra) {
-        var stmt = { q: normalizeQuery(q), limit: limit };
+        var stmt = { q: requireFilter(q, 'delete'), limit: limit };
         if (extra && extra.collation) stmt.collation = extra.collation;
         if (extra && extra.hint) stmt.hint = extra.hint;
         return toNumber((command(this._db._name, { delete: this._name, deletes: [stmt] })).n);
@@ -626,7 +631,7 @@
     C.deleteMany = function (q, options) { return { acknowledged: true, deletedCount: this._delete(q, 0, options) }; };
     C.findAndModify = function (args) {
         var cmd = Object.assign({ findAndModify: this._name }, args);
-        if (cmd.query !== undefined) cmd.query = normalizeQuery(cmd.query);
+        cmd.query = requireFilter(cmd.query, 'findAndModify');
         return command(this._db._name, cmd).value;
     };
     C.findOneAndUpdate = function (filter, update, options) {

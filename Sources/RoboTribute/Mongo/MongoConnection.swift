@@ -49,6 +49,7 @@ nonisolated final class MongoConnection: @unchecked Sendable {
     let serverVersion: String
     private let pool: OpaquePointer
     private let tunnel: SSHTunnel?
+    private let members: MemberWatch?
     private let isClosed = OSAllocatedUnfairLock(initialState: false)
 
     private static let initOnce: Void = mongoc_init()
@@ -60,6 +61,7 @@ nonisolated final class MongoConnection: @unchecked Sendable {
     init(settings: ConnectionSettings, secrets: ConnectionSecrets, timeoutSeconds: Int) throws {
         _ = Self.initOnce
         if let reason = settings.transportSecurityError { throw MongoError("\(settings.readableName): \(reason)") }
+        if settings.requiresLocalMembers { try Self.ensureMembersAreLocal(settings: settings, secrets: secrets, timeoutSeconds: timeoutSeconds) }
         var host = settings.serverHost
         var port = settings.serverPort
         var tunnel: SSHTunnel?
@@ -70,10 +72,12 @@ nonisolated final class MongoConnection: @unchecked Sendable {
             host = "127.0.0.1"
             port = started.localPort
         }
+        let members = settings.requiresLocalMembers ? MemberWatch() : nil
         do {
             let pool = try Self.makePool(settings: settings, secrets: secrets, host: host, port: port, timeoutSeconds: timeoutSeconds)
+            members?.install(on: pool)
             do {
-                let buildInfo = try PooledClient(pool: pool, owner: nil).runCommand(db: "admin", command: ["buildInfo": .int32(1)])
+                let buildInfo = try PooledClient(pool: pool, owner: nil, settings: settings, members: members).runCommand(db: "admin", command: ["buildInfo": .int32(1)])
                 serverVersion = buildInfo["version"]?.stringValue ?? ""
             } catch {
                 mongoc_client_pool_destroy(pool)
@@ -85,6 +89,7 @@ nonisolated final class MongoConnection: @unchecked Sendable {
             throw error
         }
         self.tunnel = tunnel
+        self.members = members
         self.settings = settings
         address = settings.fullAddress
         Log.info("Connected to \(settings.fullAddress), MongoDB \(serverVersion)")
@@ -92,7 +97,7 @@ nonisolated final class MongoConnection: @unchecked Sendable {
 
     deinit {
         // Destroying the pool ends its server sessions over the network.
-        let teardown = Teardown(pool: pool, tunnel: tunnel)
+        let teardown = Teardown(pool: pool, tunnel: tunnel, members: members)
         Blocking.detach { teardown.run() }
     }
 
@@ -105,6 +110,8 @@ nonisolated final class MongoConnection: @unchecked Sendable {
     private struct Teardown: @unchecked Sendable {
         let pool: OpaquePointer
         let tunnel: SSHTunnel?
+        /// The pool's monitor calls into it until the pool is destroyed.
+        let members: MemberWatch?
 
         func run() {
             mongoc_client_pool_destroy(pool)
@@ -124,8 +131,7 @@ nonisolated final class MongoConnection: @unchecked Sendable {
             let formattedHost = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
             uriString = "mongodb://\(formattedHost):\(port)/?directConnection=true"
         case .replicaSet:
-            let members = settings.replicaSetMembers.isEmpty ? ["\(host):\(port)"] : settings.replicaSetMembers
-            var s = "mongodb://\(members.joined(separator: ","))/"
+            var s = "mongodb://\(settings.seedMembers.joined(separator: ","))/"
             if !settings.replicaSetName.isEmpty {
                 s += "?replicaSet=\(settings.replicaSetName.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? settings.replicaSetName)"
             }
@@ -163,12 +169,38 @@ nonisolated final class MongoConnection: @unchecked Sendable {
         guard let pool = mongoc_client_pool_new_with_error(uri, &error) else { throw MongoError(error) }
         mongoc_client_pool_set_error_api(pool, Int32(MONGOC_ERROR_API_VERSION_2))
         if settings.ssl.sslEnabled {
-            applyTLS(pool, ssl: settings.ssl, pemPassphrase: secrets.pemPassphrase)
+            withTLSOptions(ssl: settings.ssl, pemPassphrase: secrets.pemPassphrase) { mongoc_client_pool_set_ssl_opts(pool, &$0) }
         }
         return pool
     }
 
-    private static func applyTLS(_ pool: OpaquePointer, ssl: SSLSettings, pemPassphrase: String) {
+    /// Asks a seed directly which members its replica set has, before any pool can discover and connect to them.
+    private static func ensureMembersAreLocal(settings: ConnectionSettings, secrets: ConnectionSecrets, timeoutSeconds: Int) throws {
+        for seed in settings.seedMembers {
+            guard let (host, port) = ConnectionSettings.splitHostPort(seed) else { continue }
+            var probe = settings
+            probe.connectionType = .direct
+            probe.credential.enabled = false
+            guard let hello = try? isMaster(probe, secrets: secrets, host: host, port: port, timeoutSeconds: timeoutSeconds) else { continue }
+            let members = ["hosts", "passives", "arbiters"].flatMap { key -> [String] in
+                guard case .array(let hosts)? = hello[key] else { return [] }
+                return hosts.compactMap(\.stringValue)
+            }
+            let remote = members.filter { !ConnectionSettings.isLoopback(ConnectionSettings.host(ofMember: $0)) }
+            if !remote.isEmpty {
+                throw MongoError("\(settings.readableName): the replica set has members on other machines (\(remote.joined(separator: ", "))). Connecting to them needs verified TLS.")
+            }
+            return
+        }
+    }
+
+    private static func isMaster(_ settings: ConnectionSettings, secrets: ConnectionSecrets, host: String, port: Int, timeoutSeconds: Int) throws -> BSONDocument {
+        let pool = try makePool(settings: settings, secrets: secrets, host: host, port: port, timeoutSeconds: timeoutSeconds)
+        defer { mongoc_client_pool_destroy(pool) }
+        return try PooledClient(pool: pool, owner: nil, settings: settings, members: nil).runCommand(db: "admin", command: ["isMaster": .int32(1)])
+    }
+
+    private static func withTLSOptions(ssl: SSLSettings, pemPassphrase: String, _ apply: (inout mongoc_ssl_opt_t) -> Void) {
         let caFile = ssl.allowInvalidCertificates ? "" : (ssl.caFile as NSString).expandingTildeInPath
         let pemFile = ssl.usePemFile ? (ssl.pemKeyFile as NSString).expandingTildeInPath : ""
         let crlFile = ssl.useAdvancedOptions ? (ssl.crlFile as NSString).expandingTildeInPath : ""
@@ -186,7 +218,7 @@ nonisolated final class MongoConnection: @unchecked Sendable {
                         opts.pem_file = pem
                         opts.crl_file = crl
                         opts.pem_pwd = pwd
-                        mongoc_client_pool_set_ssl_opts(pool, &opts)
+                        apply(&opts)
                     }
                 }
             }
@@ -197,7 +229,7 @@ nonisolated final class MongoConnection: @unchecked Sendable {
 
     func checkout() throws -> PooledClient {
         guard !isClosed.withLock({ $0 }) else { throw MongoError("Not connected") }
-        return try PooledClient(pool: pool, owner: self)
+        return try PooledClient(pool: pool, owner: self, settings: settings, members: members)
     }
 
     func withClient<T>(_ body: (PooledClient) throws -> T) throws -> T {
@@ -243,19 +275,9 @@ nonisolated final class MongoConnection: @unchecked Sendable {
     }
 
     func listCollections(db: String) throws -> [CollectionInfo] {
-        try withClient { client in
-            guard let database = mongoc_client_get_database(client.client, db) else { throw MongoError("Invalid database") }
-            defer { mongoc_database_destroy(database) }
-            let opts: BSONDocument = ["nameOnly": .bool(true), "authorizedCollections": .bool(true)]
-            let docs = try opts.withBSON { o -> [BSONDocument] in
-                guard let cursor = mongoc_database_find_collections_with_opts(database, o) else { throw MongoError("Unable to list collections") }
-                defer { mongoc_cursor_destroy(cursor) }
-                return try PooledClient.drain(cursor, max: .max)
-            }
-            return docs.compactMap { doc in
-                doc["name"]?.stringValue.map { CollectionInfo(name: $0, type: doc["type"]?.stringValue ?? "collection") }
-            }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        }
+        try withClient { try $0.listCollections(db: db) }.compactMap { doc in
+            doc["name"]?.stringValue.map { CollectionInfo(name: $0, type: doc["type"]?.stringValue ?? "collection") }
+        }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     // MARK: Documents
@@ -278,10 +300,11 @@ nonisolated final class MongoConnection: @unchecked Sendable {
     }
 
     func replace(db: String, collection: String, id: BSONValue, with document: BSONDocument) throws {
-        _ = try runCommand(db: db, command: [
+        let reply = try runCommand(db: db, command: [
             "update": .string(collection),
-            "updates": .array([.document(["q": .document(["_id": id]), "u": .document(document), "upsert": .bool(true)])]),
+            "updates": .array([.document(["q": .document(["_id": id]), "u": .document(document), "upsert": .bool(false)])]),
         ])
+        if reply["n"]?.intValue == 0 { throw MongoError("The document no longer exists, it was not saved.") }
     }
 
     func delete(db: String, collection: String, filter: BSONDocument, limit: Int) throws {
@@ -316,24 +339,107 @@ nonisolated final class MongoConnection: @unchecked Sendable {
     }
 }
 
-/// A client checked out of the pool; it goes back to the pool when released.
-nonisolated final class PooledClient {
-    let pool: OpaquePointer
-    let client: OpaquePointer
-    private let owner: MongoConnection?
+/// Learns about replica set members from the driver's topology monitor as soon as it discovers them.
+nonisolated final class MemberWatch: @unchecked Sendable {
+    private let remote = OSAllocatedUnfairLock<String?>(initialState: nil)
 
-    init(pool: OpaquePointer, owner: MongoConnection?) throws {
+    var remoteMember: String? { remote.withLock { $0 } }
+
+    /// Must run before the first client leaves the pool; the pool keeps an unretained pointer to this watch.
+    func install(on pool: OpaquePointer) {
+        let callbacks = mongoc_apm_callbacks_new()
+        mongoc_apm_set_server_opening_cb(callbacks) { event in
+            guard let event, let context = mongoc_apm_server_opening_get_context(event),
+                  let host = mongoc_apm_server_opening_get_host(event) else { return }
+            let name = withUnsafeBytes(of: host.pointee.host) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+            guard !ConnectionSettings.isLoopback(name) else { return }
+            Unmanaged<MemberWatch>.fromOpaque(context).takeUnretainedValue().remote.withLock { $0 = $0 ?? name }
+        }
+        mongoc_client_pool_set_apm_callbacks(pool, callbacks, Unmanaged.passUnretained(self).toOpaque())
+        mongoc_apm_callbacks_destroy(callbacks)
+    }
+}
+
+/// A driver cursor with the collection or database handle it reads from, destroyed in that order.
+nonisolated final class MongoCursor {
+    let pointer: OpaquePointer
+    private let releaseOwner: () -> Void
+
+    init(_ pointer: OpaquePointer, releaseOwner: @escaping () -> Void) {
+        self.pointer = pointer
+        self.releaseOwner = releaseOwner
+    }
+
+    deinit {
+        mongoc_cursor_destroy(pointer)
+        releaseOwner()
+    }
+
+    func drain(max: Int = .max) throws -> [BSONDocument] {
+        var docs: [BSONDocument] = []
+        var current: UnsafePointer<bson_t>?
+        while docs.count < max, mongoc_cursor_next(pointer, &current) {
+            if let current { docs.append(try BSONDecoder.decode(current)) }
+        }
+        if let error = MongoError.from(cursor: pointer) { throw error }
+        return docs
+    }
+}
+
+/// A client checked out of the pool; it goes back to the pool when released.
+/// It keeps the driver client to itself so every command passes `authorize`, which enforces read-only connections.
+nonisolated final class PooledClient {
+    private let pool: OpaquePointer
+    private let client: OpaquePointer
+    private let owner: MongoConnection?
+    private let settings: ConnectionSettings
+    private let members: MemberWatch?
+
+    init(pool: OpaquePointer, owner: MongoConnection?, settings: ConnectionSettings, members: MemberWatch?) throws {
         guard let client = mongoc_client_pool_pop(pool) else { throw MongoError("Unable to obtain a client from the pool") }
         self.pool = pool
         self.client = client
         self.owner = owner
+        self.settings = settings
+        self.members = members
     }
 
     deinit {
         mongoc_client_pool_push(pool, client)
     }
 
+    /// An allowlist, so commands this list doesn't know are refused rather than let through.
+    private static let readOnlyCommands: Set<String> = [
+        "find", "getmore", "killcursors", "count", "distinct", "aggregate", "explain",
+        "listcollections", "listdatabases", "listindexes", "dbstats", "collstats", "datasize",
+        "buildinfo", "hello", "ismaster", "ping", "serverstatus", "hostinfo", "getcmdlineopts", "getlog", "getparameter",
+        "connectionstatus", "currentop", "listcommands", "whatsmyuri", "usersinfo", "rolesinfo", "replsetgetstatus", "replsetgetconfig", "top",
+    ]
+
+    private func authorize(_ command: BSONDocument) throws {
+        if let remote = members?.remoteMember {
+            throw MongoError("The replica set now includes \(remote), which is not on this machine. Connecting to it needs verified TLS.")
+        }
+        if settings.isReadOnly, !Self.isReadOnly(command) {
+            throw MongoError("This connection is read-only, \"\(command.elements.first?.key ?? "")\" was blocked.")
+        }
+    }
+
+    static func isReadOnly(_ command: BSONDocument) -> Bool {
+        guard let name = command.elements.first?.key.lowercased(), readOnlyCommands.contains(name) else { return false }
+        return name != "aggregate" || command["pipeline"].map(containsOutputStage) != true
+    }
+
+    private static func containsOutputStage(_ value: BSONValue) -> Bool {
+        switch value {
+        case .document(let doc): return doc.elements.contains { $0.key == "$out" || $0.key == "$merge" || containsOutputStage($0.value) }
+        case .array(let items): return items.contains(where: containsOutputStage)
+        default: return false
+        }
+    }
+
     func runCommand(db: String, command: BSONDocument) throws -> BSONDocument {
+        try authorize(command)
         var reply = bson_t()
         var error = bson_error_t()
         let ok = command.withBSON { mongoc_client_command_simple(client, db, $0, nil, &reply, &error) }
@@ -353,12 +459,6 @@ nonisolated final class PooledClient {
         }
     }
 
-    func withCollection<T>(db: String, _ name: String, _ body: (OpaquePointer) throws -> T) throws -> T {
-        guard let collection = mongoc_client_get_collection(client, db, name) else { throw MongoError("Invalid collection") }
-        defer { mongoc_collection_destroy(collection) }
-        return try body(collection)
-    }
-
     func find(db: String, collection: String, options: MongoConnection.FindOptions) throws -> [BSONDocument] {
         var opts = BSONDocument()
         if let projection = options.projection, !projection.isEmpty { opts.append("projection", .document(projection)) }
@@ -371,45 +471,61 @@ nonisolated final class PooledClient {
         }
         if options.maxTimeMS > 0 { opts.append("maxTimeMS", .int64(Int64(options.maxTimeMS))) }
         if let collation = options.collation { opts.append("collation", .document(collation)) }
-        return try withCollection(db: db, collection) { coll in
-            try options.filter.withBSON { filter in
-                try opts.withBSON { o in
-                    guard let cursor = mongoc_collection_find_with_opts(coll, filter, o, nil) else { throw MongoError("Unable to create cursor") }
-                    defer { mongoc_cursor_destroy(cursor) }
-                    return try Self.drain(cursor, max: options.limit > 0 ? options.limit : .max)
-                }
-            }
+        return try findCursor(db: db, collection: collection, filter: options.filter, options: opts).drain(max: options.limit > 0 ? options.limit : .max)
+    }
+
+    func findCursor(db: String, collection: String, filter: BSONDocument, options: BSONDocument) throws -> MongoCursor {
+        try authorize(["find": .string(collection)])
+        return try collectionCursor(db: db, collection) { coll in
+            filter.withBSON { f in options.withBSON { o in mongoc_collection_find_with_opts(coll, f, o, nil) } }
         }
     }
 
     func aggregate(db: String, collection: String, pipeline: [BSONValue], options: BSONDocument) throws -> [BSONDocument] {
-        try withCollection(db: db, collection) { coll in
-            try (["pipeline": .array(pipeline)] as BSONDocument).withBSON { p in
-                try options.withBSON { o in
-                    guard let cursor = mongoc_collection_aggregate(coll, MONGOC_QUERY_NONE, p, o, nil) else { throw MongoError("Unable to create cursor") }
-                    defer { mongoc_cursor_destroy(cursor) }
-                    return try Self.drain(cursor, max: .max)
-                }
-            }
+        try aggregateCursor(db: db, collection: collection, spec: ["pipeline": .array(pipeline)], options: options).drain()
+    }
+
+    /// `spec` is `{pipeline: [...]}`; without a collection it runs on the database, like `$currentOp`.
+    func aggregateCursor(db: String, collection: String?, spec: BSONDocument, options: BSONDocument) throws -> MongoCursor {
+        try authorize(["aggregate": collection.map { .string($0) } ?? .int32(1), "pipeline": spec["pipeline"] ?? .array([])])
+        let open = { (run: (UnsafePointer<bson_t>, UnsafePointer<bson_t>) -> OpaquePointer?) in
+            spec.withBSON { p in options.withBSON { o in run(p, o) } }
         }
+        if let collection {
+            return try collectionCursor(db: db, collection) { coll in open { mongoc_collection_aggregate(coll, MONGOC_QUERY_NONE, $0, $1, nil) } }
+        }
+        guard let database = mongoc_client_get_database(client, db) else { throw MongoError("Invalid database") }
+        guard let cursor = open({ mongoc_database_aggregate(database, $0, $1, nil) }) else {
+            mongoc_database_destroy(database)
+            throw MongoError("Unable to create cursor")
+        }
+        return MongoCursor(cursor) { mongoc_database_destroy(database) }
     }
 
     func listIndexes(db: String, collection: String) throws -> [IndexInfo] {
-        try withCollection(db: db, collection) { coll in
-            guard let cursor = mongoc_collection_find_indexes_with_opts(coll, nil) else { throw MongoError("Unable to list indexes") }
-            defer { mongoc_cursor_destroy(cursor) }
-            return try Self.drain(cursor, max: .max).map { IndexInfo(name: $0["name"]?.stringValue ?? "", spec: $0) }
-        }
+        try authorize(["listIndexes": .string(collection)])
+        return try collectionCursor(db: db, collection) { mongoc_collection_find_indexes_with_opts($0, nil) }
+            .drain().map { IndexInfo(name: $0["name"]?.stringValue ?? "", spec: $0) }
     }
 
-    static func drain(_ cursor: OpaquePointer, max: Int) throws -> [BSONDocument] {
-        var docs: [BSONDocument] = []
-        var current: UnsafePointer<bson_t>?
-        while docs.count < max, mongoc_cursor_next(cursor, &current) {
-            if let current { docs.append(try BSONDecoder.decode(current)) }
+    func listCollections(db: String) throws -> [BSONDocument] {
+        try authorize(["listCollections": .int32(1)])
+        guard let database = mongoc_client_get_database(client, db) else { throw MongoError("Invalid database") }
+        let opts: BSONDocument = ["nameOnly": .bool(true), "authorizedCollections": .bool(true)]
+        guard let cursor = opts.withBSON({ mongoc_database_find_collections_with_opts(database, $0) }) else {
+            mongoc_database_destroy(database)
+            throw MongoError("Unable to list collections")
         }
-        if let error = MongoError.from(cursor: cursor) { throw error }
-        return docs
+        return try MongoCursor(cursor) { mongoc_database_destroy(database) }.drain()
+    }
+
+    private func collectionCursor(db: String, _ name: String, _ open: (OpaquePointer) -> OpaquePointer?) throws -> MongoCursor {
+        guard let collection = mongoc_client_get_collection(client, db, name) else { throw MongoError("Invalid collection") }
+        guard let cursor = open(collection) else {
+            mongoc_collection_destroy(collection)
+            throw MongoError("Unable to create cursor")
+        }
+        return MongoCursor(cursor) { mongoc_collection_destroy(collection) }
     }
 }
 

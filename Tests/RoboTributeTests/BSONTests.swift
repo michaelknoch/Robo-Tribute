@@ -79,6 +79,27 @@ final class BSONTests: XCTestCase {
         XCTAssertEqual(f.jsonString(parsed[0]), f.jsonString(original))
     }
 
+    func testEditorFormatKeepsEveryDoubleExact() throws {
+        var values: [Double] = [0.30000000000000004, 59.97000000000001, 1e15, 1e16, 9_007_199_254_740_993, 5e-324, -0.0, 1.7976931348623157e308, 3, 0.1]
+        var generator = SystemRandomNumberGenerator()
+        for _ in 0..<2000 { values.append(Double(bitPattern: generator.next() & 0x7FEF_FFFF_FFFF_FFFF)) }
+        try assertEditorRoundTrip(values.map { .double($0) })
+    }
+
+    func testEditorFormatKeepsRegexesExact() throws {
+        try assertEditorRoundTrip([
+            .regex(pattern: "\\d+", options: "i"), .regex(pattern: "a/b", options: ""), .regex(pattern: "a\\/b", options: "imsx"),
+            .regex(pattern: "ends\\", options: "u"), .regex(pattern: "[\\w.]+@x\\.com$", options: "m"), .regex(pattern: "line\nbreak", options: ""),
+        ])
+    }
+
+    private func assertEditorRoundTrip(_ values: [BSONValue], file: StaticString = #filePath, line: UInt = #line) throws {
+        let f = BSONFormatter(uuidEncoding: .standard, timeZone: .utc)
+        let original = BSONDocument(values.enumerated().map { ("v\($0.offset)", $0.element) })
+        let parsed = try ShellJSONParser.parseDocuments(f.jsonString(original))
+        XCTAssertEqual(BSONEncoder.encode(parsed[0]), BSONEncoder.encode(original), f.jsonString(original), file: file, line: line)
+    }
+
     func testParseErrorOffset() {
         XCTAssertThrowsError(try ShellJSONParser.parseDocuments("{\n  a: 1,\n  b: ]\n}")) { error in
             let e = error as! ShellJSONParser.ParseError

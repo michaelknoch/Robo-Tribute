@@ -352,7 +352,14 @@ final class OutputItemView: NSView, DocumentActionsDelegate {
         let info = DocumentEditorWindow.Info(server: host.session.connection.address, db: ns.db, collection: ns.collection)
         let editor = DocumentEditorWindow(title: "Edit Document", info: info, json: BSONFormatter.current.jsonString(doc), readOnly: false)
         guard let docs = editor.runModal(), let edited = docs.first else { return }
-        let id = edited["_id"] ?? doc["_id"] ?? .null
+        guard let id = doc["_id"] else {
+            Alerts.info("Cannot save", "The document has no _id field, so it can't be matched for saving.")
+            return
+        }
+        guard docs.count == 1, let editedId = edited["_id"], BSONEncoder.encode(["_id": editedId]) == BSONEncoder.encode(["_id": id]) else {
+            Alerts.info("Cannot save", "Saving must keep the document's _id unchanged and contain exactly one document.")
+            return
+        }
         write(host: host, "Document saved") { try $0.replace(db: ns.db, collection: ns.collection, id: id, with: edited) }
     }
 

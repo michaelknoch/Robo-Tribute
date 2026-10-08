@@ -95,6 +95,18 @@ final class ShellTests: XCTestCase {
         XCTAssertTrue(result.error?.hasPrefix("SyntaxError") ?? false)
     }
 
+    func testWritesWithoutAFilterAreRefused() async throws {
+        let s = try shell()
+        _ = await run("db.guarded.drop(); db.guarded.insertMany([{_id: 1}, {_id: 2}])", s)
+        for script in ["db.guarded.deleteMany(undefined)", "db.guarded.deleteOne(null)", "db.guarded.updateMany(undefined, {$set: {x: 1}})",
+                       "db.guarded.findOneAndDelete(undefined)", "var filtr; db.guarded.remove(filtr)"] {
+            let result = await s.execute(script, timeoutSeconds: 15, batchSize: 50)
+            XCTAssertNotNil(result.error, script)
+        }
+        let r = await run("db.guarded.countDocuments({x: {$exists: false}})", s)
+        XCTAssertEqual(r.results.last?.text, "2")
+    }
+
     func testTimeoutEndsRunawayScript() async throws {
         let result = try await shell().execute("while (true) {}", timeoutSeconds: 1, batchSize: 50)
         XCTAssertTrue(result.timedOut)

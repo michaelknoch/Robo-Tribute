@@ -72,7 +72,7 @@ actor MongoShell {
     private var databaseName: String
     private var context: JSContext?
     private var pooled: PooledClient?
-    private var cursors: [Int: (cursor: OpaquePointer, destroyOwner: () -> Void)] = [:]
+    private var cursors: [Int: MongoCursor] = [:]
     private var nextCursorId = 1
     private var printed: [String] = []
     private var statementStart = Date()
@@ -386,30 +386,16 @@ actor MongoShell {
                 var spec = try ExtendedJSON.parse(specJSON)
                 let filter = spec["filter"]?.documentValue ?? BSONDocument()
                 spec["filter"] = nil
-                return try shell.openCollectionCursor(db: db, collection: coll) { collection in
-                    filter.withBSON { f in spec.withBSON { o in mongoc_collection_find_with_opts(collection, f, o, nil) } }
-                }
+                return shell.register(try shell.client().findCursor(db: db, collection: coll, filter: filter, options: spec))
             }
         } as @convention(block) (String, String, String) -> Int)
 
         setFn("aggregate", { [weak self] (db: String, coll: String, pipelineJSON: String, optionsJSON: String) -> Int in
-            MongoShell.call(self, 0) { shell in
-                let pipeline = try ExtendedJSON.parse("{\"pipeline\": \(pipelineJSON)}")
-                let options = try ExtendedJSON.parse(optionsJSON)
-                return try shell.openCollectionCursor(db: db, collection: coll) { collection in
-                    pipeline.withBSON { p in options.withBSON { o in mongoc_collection_aggregate(collection, MONGOC_QUERY_NONE, p, o, nil) } }
-                }
-            }
+            MongoShell.call(self, 0) { try $0.openAggregateCursor(db: db, collection: coll, pipelineJSON: pipelineJSON, optionsJSON: optionsJSON) }
         } as @convention(block) (String, String, String, String) -> Int)
 
         setFn("aggregateDb", { [weak self] (db: String, pipelineJSON: String, optionsJSON: String) -> Int in
-            MongoShell.call(self, 0) { shell in
-                let pipeline = try ExtendedJSON.parse("{\"pipeline\": \(pipelineJSON)}")
-                let options = try ExtendedJSON.parse(optionsJSON)
-                guard let database = mongoc_client_get_database(try shell.client().client, db) else { throw MongoError("Invalid database") }
-                let cursor = pipeline.withBSON { p in options.withBSON { o in mongoc_database_aggregate(database, p, o, nil) } }
-                return shell.register(cursor, destroyOwner: { mongoc_database_destroy(database) })
-            }
+            MongoShell.call(self, 0) { try $0.openAggregateCursor(db: db, collection: nil, pipelineJSON: pipelineJSON, optionsJSON: optionsJSON) }
         } as @convention(block) (String, String, String) -> Int)
 
         setFn("listIndexes", { [weak self] (db: String, coll: String) -> [String] in
@@ -429,25 +415,21 @@ actor MongoShell {
 
     // MARK: Cursors held by JavaScript
 
-    private func openCollectionCursor(db: String, collection name: String, _ open: (OpaquePointer) -> OpaquePointer?) throws -> Int {
-        guard let collection = mongoc_client_get_collection(try client().client, db, name) else { throw MongoError("Invalid collection") }
-        return register(open(collection), destroyOwner: { mongoc_collection_destroy(collection) })
+    private func openAggregateCursor(db: String, collection: String?, pipelineJSON: String, optionsJSON: String) throws -> Int {
+        let spec = try ExtendedJSON.parse("{\"pipeline\": \(pipelineJSON)}")
+        return register(try client().aggregateCursor(db: db, collection: collection, spec: spec, options: ExtendedJSON.parse(optionsJSON)))
     }
 
-    private func register(_ cursor: OpaquePointer?, destroyOwner: @escaping () -> Void) -> Int {
-        guard let cursor else {
-            destroyOwner()
-            return 0
-        }
+    private func register(_ cursor: MongoCursor) -> Int {
         let id = nextCursorId
         nextCursorId += 1
-        cursors[id] = (cursor, destroyOwner)
+        cursors[id] = cursor
         return id
     }
 
     /// Returns up to `max` documents as canonical Extended JSON; an exhausted cursor is closed right away.
     private func nextBatch(_ id: Int, max: Int) throws -> [String] {
-        guard let cursor = cursors[id]?.cursor else { return [] }
+        guard let cursor = cursors[id]?.pointer else { return [] }
         var batch: [String] = []
         var current: UnsafePointer<bson_t>?
         while batch.count < max, mongoc_cursor_next(cursor, &current) {
@@ -462,12 +444,10 @@ actor MongoShell {
     }
 
     private func closeCursor(_ id: Int) {
-        guard let entry = cursors.removeValue(forKey: id) else { return }
-        mongoc_cursor_destroy(entry.cursor)
-        entry.destroyOwner()
+        cursors[id] = nil
     }
 
     private func closeCursors() {
-        for id in Array(cursors.keys) { closeCursor(id) }
+        cursors.removeAll()
     }
 }

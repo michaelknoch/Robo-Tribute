@@ -95,14 +95,18 @@ class ExplorerNode {
     }
 }
 
+private extension ConnectionSettings {
+    var explorerTitle: String { readableName + (isReadOnly ? " (read-only)" : "") }
+}
+
 final class ServerNode: ExplorerNode {
     init(session: ServerSession) {
-        super.init(session: session, title: session.settings.readableName,
+        super.init(session: session, title: session.settings.explorerTitle,
                    icon: session.settings.isReplicaSet ? Theme.replicaSet : Theme.server)
         isLoaded = false
     }
 
-    override var baseTitle: String { session.settings.readableName }
+    override var baseTitle: String { session.settings.explorerTitle }
 
     override func fetch() async throws -> [ExplorerNode] {
         let names = try await session.connection.run { try $0.listDatabases() }
@@ -504,7 +508,7 @@ final class ExplorerController: NSViewController, NSOutlineViewDataSource, NSOut
         guard let name = dialog.run(), !name.isEmpty else { return }
         // MongoDB creates a database lazily with its first collection, so it only exists in the explorer until then.
         server.add(DatabaseNode(session: server.session, name: name))
-        server.title = ExplorerNode.countTitle(server.session.settings.readableName, server.children.filter { $0 is DatabaseNode }.count)
+        server.title = ExplorerNode.countTitle(server.baseTitle, server.children.filter { $0 is DatabaseNode }.count)
         outlineView.reloadItem(server, reloadChildren: true)
         Log.info("Database '\(name)' created.")
     }

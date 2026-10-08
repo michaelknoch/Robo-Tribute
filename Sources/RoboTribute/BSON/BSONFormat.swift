@@ -139,7 +139,12 @@ nonisolated struct BSONFormatter: Sendable {
             out += pretty > 0 && supported ? "\"" + isoTime(ms, separator: "T") + "\"" : String(ms)
             out += ")"
         case .regex(let pattern, let options):
-            out += "/" + Self.escape(pattern, escapeSlash: true) + "/" + options.filter { "gim".contains($0) }
+            // ShellJSONParser reads a /literal/ verbatim except for \/, so only patterns without / or a trailing \ survive that form.
+            if pattern.contains("/") || pattern.hasSuffix("\\") || pattern.unicodeScalars.contains(where: { $0.value < 0x20 }) {
+                out += "{ \"$regex\" : \"" + Self.escape(pattern) + "\", \"$options\" : \"" + Self.escape(options) + "\" }"
+            } else {
+                out += "/" + pattern + "/" + options
+            }
         case .codeWithScope(let code, let scope):
             if scope.isEmpty {
                 out += code
@@ -173,7 +178,7 @@ nonisolated struct BSONFormatter: Sendable {
             let supported = Self.minDate < ms && ms < Self.maxDate
             return supported ? isoTime(ms, separator: " ") : "\(ms)"
         case .null: return "null"
-        case .regex(let pattern, let options): return "/\(pattern)/" + options.filter { "gim".contains($0) }
+        case .regex(let pattern, let options): return "/\(pattern)/" + options
         case .dbPointer: return ""
         case .int32(let v): return "\(v)"
         case .int64(let v): return "\(v)"
@@ -227,25 +232,17 @@ nonisolated struct BSONFormatter: Sendable {
     static func formatDouble(_ d: Double) -> String {
         if d.isNaN { return "NaN" }
         if d.isInfinite { return d > 0 ? "Infinity" : "-Infinity" }
-        var str = String(format: "%.15g", d)
-        let hasExponent = str.lowercased().contains("e+") || str.lowercased().contains("e-")
-        if !hasExponent && d == d.rounded() && abs(d) < 9.2e18 {
-            str += ".0"
-        } else if str.hasSuffix("e+15") || str.hasSuffix("e+16") {
-            str = String(format: "%.15f", d)
-            while str.contains(".") && str.hasSuffix("00") { str.removeLast() }
-        }
-        return str
+        // Swift's description is the shortest text that parses back to the same bits; %.15g is not.
+        return d.description
     }
 
-    static func escape(_ s: String, escapeSlash: Bool = false) -> String {
+    static func escape(_ s: String) -> String {
         var out = ""
         out.reserveCapacity(s.utf8.count)
         for scalar in s.unicodeScalars {
             switch scalar {
             case "\"": out += "\\\""
             case "\\": out += "\\\\"
-            case "/" where escapeSlash: out += "\\/"
             case "\u{08}": out += "\\b"
             case "\u{0C}": out += "\\f"
             case "\n": out += "\\n"
