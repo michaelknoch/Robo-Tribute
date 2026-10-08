@@ -288,7 +288,7 @@ final class BsonTreeController: NSObject, NSOutlineViewDataSource, NSOutlineView
     }
 
     func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
-        RoboRowView()
+        RoboRowView.make(outlineView)
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
@@ -319,36 +319,42 @@ enum BsonCell {
     static func make(_ tableView: NSTableView, id: String, withIcon: Bool) -> NSTableCellView {
         let identifier = NSUserInterfaceItemIdentifier(id)
         if let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSTableCellView { return cell }
-        let cell = NSTableCellView()
+        let cell = BsonCellView(withIcon: withIcon)
         cell.identifier = identifier
+        return cell
+    }
+}
+
+/// Frame layout instead of constraints: every reused cell otherwise re-solves Auto Layout while scrolling.
+private final class BsonCellView: NSTableCellView {
+    private let textHeight: CGFloat
+
+    init(withIcon: Bool) {
         let text = NSTextField(labelWithString: "")
         text.font = Theme.treeFont
         text.lineBreakMode = .byTruncatingTail
         text.cell?.truncatesLastVisibleLine = true
-        text.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(text)
-        cell.textField = text
-        var constraints = [
-            text.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -2),
-            text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-        ]
+        textHeight = ceil(text.intrinsicContentSize.height)
+        super.init(frame: .zero)
+        addSubview(text)
+        textField = text
         if withIcon {
             let image = NSImageView()
-            image.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(image)
-            cell.imageView = image
-            constraints += [
-                image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-                image.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                image.widthAnchor.constraint(equalToConstant: 16),
-                image.heightAnchor.constraint(equalToConstant: 16),
-                text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 5),
-            ]
-        } else {
-            constraints.append(text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2))
+            addSubview(image)
+            imageView = image
         }
-        NSLayoutConstraint.activate(constraints)
-        return cell
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        var x: CGFloat = 2
+        if let imageView {
+            imageView.frame = NSRect(x: x, y: floor((bounds.height - 16) / 2), width: 16, height: 16)
+            x = imageView.frame.maxX + 5
+        }
+        textField?.frame = NSRect(x: x, y: floor((bounds.height - textHeight) / 2), width: max(bounds.width - x - 2, 0), height: textHeight)
     }
 }
 
@@ -454,7 +460,7 @@ final class BsonTableController: NSObject, NSTableViewDataSource, NSTableViewDel
 
     func numberOfRows(in tableView: NSTableView) -> Int { roots.count }
 
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoboRowView() }
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoboRowView.make(tableView) }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         guard let id = tableColumn?.identifier.rawValue else { return nil }
@@ -467,7 +473,10 @@ final class BsonTableController: NSObject, NSTableViewDataSource, NSTableViewDel
         guard let index = Int(id.dropFirst()) else { return nil }
         let root = roots[row]
         guard let child = root.child(named: columns[index]) else {
+            let identifier = NSUserInterfaceItemIdentifier("missingCell")
+            if let empty = tableView.makeView(withIdentifier: identifier, owner: nil) { return empty }
             let empty = ColorView(color: Theme.missingCell)
+            empty.identifier = identifier
             return empty
         }
         let cell = BsonCell.make(tableView, id: "tableCell", withIcon: true)

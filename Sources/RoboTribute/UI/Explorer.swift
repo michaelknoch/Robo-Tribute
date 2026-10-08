@@ -331,18 +331,26 @@ final class ExplorerController: NSViewController, NSOutlineViewDataSource, NSOut
         guard !node.isLoading else { return }
         node.load { [weak self, weak node] in
             guard let self, let node else { return }
+            // Widen first, so the new rows never show truncated while the panel catches up.
+            self.fitWidth(adding: node)
             self.outlineView.reloadItem(node, reloadChildren: true)
-            self.fitWidth()
         }
     }
 
-    private func fitWidth() {
+    private func fitWidth(adding parent: ExplorerNode? = nil) {
         let attributes: [NSAttributedString.Key: Any] = [.font: Theme.treeFont]
         var widest: CGFloat = 0
+        func measure(_ node: ExplorerNode, cellStart: CGFloat) {
+            widest = max(widest, cellStart + 23 + (node.title as NSString).size(withAttributes: attributes).width)
+        }
         for row in 0..<outlineView.numberOfRows {
             guard let node = outlineView.item(atRow: row) as? ExplorerNode else { continue }
-            let textStart = outlineView.frameOfCell(atColumn: 0, row: row).minX + 23
-            widest = max(widest, textStart + (node.title as NSString).size(withAttributes: attributes).width)
+            measure(node, cellStart: outlineView.frameOfCell(atColumn: 0, row: row).minX)
+        }
+        if let parent, outlineView.isItemExpanded(parent) {
+            let row = outlineView.row(forItem: parent)
+            let childStart = outlineView.frameOfCell(atColumn: 0, row: row).minX + outlineView.indentationPerLevel
+            for child in parent.children { measure(child, cellStart: childStart) }
         }
         delegate?.explorerNeedsWidth(ceil(widest) + 24)
     }
@@ -364,7 +372,7 @@ final class ExplorerController: NSViewController, NSOutlineViewDataSource, NSOut
     }
 
     func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
-        RoboRowView()
+        RoboRowView.make(outlineView)
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {

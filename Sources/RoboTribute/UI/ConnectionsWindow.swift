@@ -170,7 +170,7 @@ final class ConnectionsWindow: ModalDialog, NSTableViewDataSource, NSTableViewDe
 
     func numberOfRows(in tableView: NSTableView) -> Int { connections.count }
 
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoboRowView() }
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { RoboRowView.make(tableView) }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let connection = connections[row]

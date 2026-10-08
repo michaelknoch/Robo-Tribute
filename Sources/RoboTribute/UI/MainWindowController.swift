@@ -22,6 +22,7 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation, Expl
     let workArea = WorkAreaController()
     private let logPanel = LogPanel()
     private let mainSplit = NSSplitView()
+    private static let defaultExplorerWidth: CGFloat = 376
     private let rightSplit = NSSplitView()
     private let logsButton = NSButton(title: "Logs", target: nil, action: #selector(toggleLogs(_:)))
     private var sessions: [ServerSession] = []
@@ -52,7 +53,7 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation, Expl
         let key = "ExplorerWidthInitialized"
         if !UserDefaults.standard.bool(forKey: key) {
             window?.contentView?.layoutSubtreeIfNeeded()
-            mainSplit.setPosition(340, ofDividerAt: 0)
+            mainSplit.setPosition(Self.defaultExplorerWidth, ofDividerAt: 0)
             UserDefaults.standard.set(true, forKey: key)
         }
     }
@@ -86,10 +87,8 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation, Expl
         workArea.delegate = self
         mainSplit.isVertical = true
         mainSplit.dividerStyle = .thin
-        mainSplit.autosaveName = "MainSplit"
         rightSplit.isVertical = false
         rightSplit.dividerStyle = .thin
-        rightSplit.autosaveName = "RightSplit"
         rightSplit.addArrangedSubview(workArea.view)
         rightSplit.addArrangedSubview(logPanel)
         for view in [workArea.view, logPanel, explorer.view, rightSplit] {
@@ -97,6 +96,9 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation, Expl
         }
         mainSplit.addArrangedSubview(explorer.view)
         mainSplit.addArrangedSubview(rightSplit)
+        // Autosaved positions are only restored for subviews present when the name is set.
+        mainSplit.autosaveName = "MainSplit"
+        rightSplit.autosaveName = "RightSplit"
         mainSplit.setHoldingPriority(.init(260), forSubviewAt: 0)
         rightSplit.setHoldingPriority(.init(240), forSubviewAt: 0)
         rightSplit.setHoldingPriority(.init(260), forSubviewAt: 1)
@@ -202,9 +204,10 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation, Expl
 
     /// Only grows, so a width the user chose is kept.
     func explorerNeedsWidth(_ width: CGFloat) {
-        let target = min(width, max(mainSplit.bounds.width * 0.4, 340))
+        let target = min((width / 8).rounded(.up) * 8, max(mainSplit.bounds.width * 0.4, Self.defaultExplorerWidth))
         guard target > explorer.view.frame.width else { return }
         mainSplit.setPosition(target, ofDividerAt: 0)
+        mainSplit.layoutSubtreeIfNeeded()
     }
 
     func explorerDisconnect(_ session: ServerSession) {

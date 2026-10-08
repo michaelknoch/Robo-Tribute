@@ -103,6 +103,15 @@ enum Theme {
 
 /// Selection drawn in Robo's blue (#106CD6) regardless of the system accent color.
 final class RoboRowView: NSTableRowView {
+    private static let identifier = NSUserInterfaceItemIdentifier("RoboRowView")
+
+    static func make(_ tableView: NSTableView) -> RoboRowView {
+        if let row = tableView.makeView(withIdentifier: identifier, owner: nil) as? RoboRowView { return row }
+        let row = RoboRowView()
+        row.identifier = identifier
+        return row
+    }
+
     override func drawSelection(in dirtyRect: NSRect) {
         (isEmphasized ? Theme.selection : Theme.inactiveSelection).setFill()
         bounds.fill()
