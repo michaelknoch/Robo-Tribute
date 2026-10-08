@@ -22,15 +22,23 @@ class ModalDialog: NSObject, NSWindowDelegate {
         return accepted
     }
 
+    func beginSheet(for parent: NSWindow, completion: @escaping (Bool) -> Void) {
+        parent.beginSheet(window) { _ in completion(self.accepted) }
+    }
+
     @objc func accept() {
         guard validate() else { return }
         accepted = true
-        NSApp.stopModal()
+        end()
     }
 
     @objc func reject() {
         accepted = false
-        NSApp.stopModal()
+        end()
+    }
+
+    private func end() {
+        if let parent = window.sheetParent { parent.endSheet(window) } else { NSApp.stopModal() }
     }
 
     func validate() -> Bool { true }

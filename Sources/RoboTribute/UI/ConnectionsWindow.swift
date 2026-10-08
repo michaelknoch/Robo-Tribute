@@ -90,10 +90,6 @@ final class ConnectionsWindow: ModalDialog, NSTableViewDataSource, NSTableViewDe
         window.initialFirstResponder = tableView
     }
 
-    func run() -> ConnectionSettings? {
-        runModal() ? selected : nil
-    }
-
     override func validate() -> Bool {
         let row = tableView.selectedRow
         guard row >= 0, row < connections.count else { return false }

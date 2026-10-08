@@ -42,6 +42,8 @@ enum Theme {
         let image: NSImage
         if let url = AppResources.bundle.url(forResource: name, withExtension: nil, subdirectory: "Resources/icons"),
            let loaded = NSImage(contentsOf: url) {
+            // Qt sizes icons by pixel count and ignores the PNG's DPI, several of these are 90 to 230 dpi.
+            if let rep = loaded.representations.first { loaded.size = NSSize(width: rep.pixelsWide, height: rep.pixelsHigh) }
             image = loaded
         } else {
             image = NSImage(size: NSSize(width: 16, height: 16))

@@ -192,15 +192,13 @@ final class QueryTabController: NSViewController, OutputItemHost, NSWindowDelega
             let seconds = AppSettings.shared.shellTimeoutSec
             let message = "Failed to execute all of the script. The script has reached shell timeout (\(seconds) second\(seconds == 1 ? "" : "s")) limit."
             Log.error(message)
-            Alerts.runOutsideMainQueueJob {
-                let alert = NSAlert()
-                alert.alertStyle = .critical
-                alert.messageText = "Error"
-                alert.informativeText = message + "\n\nPlease increase the value of shell timeout using button below or from the main window menu \"Options->Change Shell Timeout\"."
-                alert.addButton(withTitle: "OK")
-                alert.addButton(withTitle: "Change Shell Timeout")
-                if alert.runModal() == .alertSecondButtonReturn { ShellTimeoutDialog.run() }
-            }
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = "Error"
+            alert.informativeText = message + "\n\nPlease increase the value of shell timeout using button below or from the main window menu \"Options->Change Shell Timeout\"."
+            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: "Change Shell Timeout")
+            Alerts.present(alert) { if $0 == .alertSecondButtonReturn { ShellTimeoutDialog.run() } }
         }
         focusEditor()
     }

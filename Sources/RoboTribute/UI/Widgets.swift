@@ -66,7 +66,7 @@ final class ColorView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         color.setFill()
-        dirtyRect.fill()
+        bounds.fill()
     }
 }
 
@@ -106,20 +106,22 @@ enum Alerts {
         show(.informational, title, message)
     }
 
-    /// A modal started inside a main-queue job holds back every main-actor task until it closes.
-    static func runOutsideMainQueueJob(_ body: @escaping @MainActor () -> Void) {
-        RunLoop.main.perform { MainActor.assumeIsolated(body) }
+    /// Shows the alert as a sheet, so callers in a Task or callback don't block the main actor.
+    static func present(_ alert: NSAlert, completion: ((NSApplication.ModalResponse) -> Void)? = nil) {
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            alert.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            completion?(alert.runModal())
+        }
     }
 
     private static func show(_ style: NSAlert.Style, _ title: String, _ message: String) {
-        runOutsideMainQueueJob {
-            let alert = NSAlert()
-            alert.alertStyle = style
-            alert.messageText = title
-            alert.informativeText = message
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-        }
+        let alert = NSAlert()
+        alert.alertStyle = style
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        present(alert)
     }
 
     static func confirm(_ title: String, _ message: String, destructive: Bool = false) -> Bool {

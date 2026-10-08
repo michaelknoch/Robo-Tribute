@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         mainWindow = MainWindowController()
         mainWindow.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
-        Alerts.runOutsideMainQueueJob { self.mainWindow.manageConnections(nil) }
+        mainWindow.manageConnections(nil)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

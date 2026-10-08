@@ -159,8 +159,11 @@ final class MainWindowController: NSWindowController, NSMenuItemValidation, Expl
     // MARK: Connections
 
     @objc func manageConnections(_ sender: Any?) {
-        guard let settings = ConnectionsWindow().run() else { return }
-        connect(settings)
+        guard let window else { return }
+        let dialog = ConnectionsWindow()
+        dialog.beginSheet(for: window) { accepted in
+            if accepted, let settings = dialog.selected { self.connect(settings) }
+        }
     }
 
     func connect(_ settings: ConnectionSettings) {

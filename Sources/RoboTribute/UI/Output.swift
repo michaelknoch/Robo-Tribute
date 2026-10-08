@@ -534,14 +534,23 @@ final class OutputView: NSView {
 
 /// Robo's progress popup: an animated bar on a rounded grey panel (ProgressBarPopup.cpp).
 final class ProgressPopup: NSView {
+    private let image = NSImageView()
+
+    // NSImageView keeps decoding and redrawing GIF frames while hidden or offscreen.
+    private func updateAnimation() {
+        image.animates = window != nil && !isHiddenOrHasHiddenAncestor
+    }
+
+    override func viewDidHide() { updateAnimation() }
+    override func viewDidUnhide() { updateAnimation() }
+    override func viewDidMoveToWindow() { updateAnimation() }
+
     init() {
         super.init(frame: NSRect(x: 0, y: 0, width: 184, height: 36))
         wantsLayer = true
         layer?.backgroundColor = NSColor(srgbRed: 0xE1 / 255, green: 0xE1 / 255, blue: 0xE1 / 255, alpha: 1).cgColor
         layer?.cornerRadius = 6
-        let image = NSImageView()
         image.image = Theme.icon("progress_bar.gif")
-        image.animates = true
         image.imageScaling = .scaleNone
         addSubview(image)
         image.translatesAutoresizingMaskIntoConstraints = false
